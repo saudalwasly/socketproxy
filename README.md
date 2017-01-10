@@ -1,8 +1,9 @@
 # README #
-`evhost` is a simple yet efficient Python-based gateway server that direct incoming traffic to different destination based on rules stated in the configuration file. `evhost` is based on `gevent` in which allows `evhost` to handle many requests per second, e.g 10K requests per second. I made `evhost` because I wanted to host several services on the same machine, but I did not want to install full-blown server such as Appache server. In addition, I wanted `evhost` to be lightweight and fast. `evhost` is contained in one python file which makes it easy to deploy.
+`evhost` is a simple yet efficient Python-based gateway server that directs incoming traffic to different destinations based on rules stated in the configuration file. `evhost` is based on `gevent` which allows `evhost` to handle many requests per second, e.g 10K requests per second. I made `evhost` because I wanted to host several services (servers) on the same machine, but I did not want to install full-blown server such as Appache server. In addition, I wanted `evhost` to be lightweight and fast. `evhost` is contained in one python file only, which makes it easy to deploy.
 
 ### How to install `evhost` ###
-Download `evhost` and copy it to the desired destination directory, that is it!. If you want to install it in a system-wide settings, you can copy it to `/usr/local/bin/`
+Download `evhost` and copy it to the desired destination directory, that is it!. 
+If you want to install it in a system-wide settings, you can copy it to `/usr/local/bin/`
 
 Currently, `evhost` depends on `gevent` Python package. You can install `gevent` using `pip` as following:
 ```
@@ -74,7 +75,7 @@ The configuration file is a text-based yaml-like file. An example of a configura
 ```
 
 
-----
+
 ### License ###
 `evhost` is distributed under the following license:
 GNU GENERAL PUBLIC LICENSE Version 2, June 1991
@@ -82,8 +83,8 @@ The license document is included in the repository (`license_gpl-2.0.txt`)
 
 Copyright (c) 2016 Saud Wasly
 
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
 -----
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
