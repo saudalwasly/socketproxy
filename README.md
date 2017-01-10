@@ -78,6 +78,7 @@ The configuration file is a text-based yaml-like file. An example of a configura
 
 ### License ###
 `evhost` is distributed under the following license:
+
 GNU GENERAL PUBLIC LICENSE Version 2, June 1991
 The license document is included in the repository (`license_gpl-2.0.txt`)
 
