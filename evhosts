@@ -1,0 +1,405 @@
+#!/usr/bin/env python
+##-*- coding: utf-8 -*-
+
+__author__ = "Saud Wasly"
+__license__ = 'GPL V2'
+
+# from gevent import monkey
+# monkey.patch_all()
+
+from gevent.server import StreamServer
+from gevent.socket import create_connection, gethostbyname
+from gevent.pool import Pool
+import gevent
+import signal
+import re
+import sys, os, shutil
+from time import time
+
+Debug = True
+
+class SubDomainTargetT(object):
+  def __init__(self):
+    self.SubDomain = ''
+    self.TargetHostAddress = ''
+    self.TargetPort = 0
+    self.TargetURLroot = '/'
+
+class URL_RedirectionT(object):
+  def __init__(self):
+    self.SourceURL = ''
+    self.TargetURL = ''
+    self.RedirectionType = '301'
+    
+    
+
+class HttpRequestHeaderT(object):
+  def __init__(self):
+    self.Host = ''
+    self.UrlPath = ''
+    self.Port = 0
+
+class VHosts(object):
+  def __init__(self):
+    self.HostAliases = []
+    ':type: list[str]'
+    self.SubDomains = []
+    ':type: list[SubDomainTargetT]'
+    self.URL_Redirections = {} #type: dict[str, URL_RedirectionT]
+    self.RedirectDictionary = {}  # type:[str, str]
+    self.RedirectDictionary['301'] = '301 Moved Permanently'
+    self.RedirectDictionary['302'] = '302 Found'
+    self.RedirectDictionary['303'] = '303 See Other'
+    self.RedirectDictionary['307'] = '307 Temporary Redirect'
+    self.RedirectDictionary['308'] = '308 Permanent Redirect '
+
+    self.Defualt_TargetHost = 'localhost'
+    self.Defualt_TargetPort = 80
+    self.Defualt_TargetRoot = '/'
+    
+    # pHost = re.compile(r'Host:\s?(.+):([0-9]*)', re.IGNORECASE)
+    self.reg_pHost = re.compile(r'Host:\s?(.+):|Host:\s?(.+)', re.IGNORECASE)
+    self.reg_pPort = re.compile(r'Host:\s?.+:([0-9]*)', re.IGNORECASE)
+    self.reg_URLPath = re.compile(r'\s(.+)\s', re.IGNORECASE)
+    self.Debug = True
+    self.terminateAll = False
+      
+    self.bind_Address = '0.0.0.0'
+    self.bind_Port = 8000
+    self.LastConnectionTime = time()
+
+      
+  def bind(self, OnAddress,  OnPort):
+    self.bind_Address = OnAddress
+    self.bind_Port = OnPort
+
+  def On_Connected(self, socket, address):
+    if time() - self.LastConnectionTime> 30:
+      self.loadSettings(settingsFile)
+    # print 'new connection from address: %s on port %s' % (address[0], address[1])
+
+    (THost, HttpReq, initial_header) = self.GetTarget(socket)
+    TargetHost = THost #type: SubDomainTargetT
+    HttpR = HttpReq #type: HttpRequestHeaderT
+    # print(self.URL_Redirections.keys())
+    if TargetHost is not None:
+      # print 'Redirecting %s to %s:%s' % (HttpR.Host, TargetHost.TargetHostAddress + HttpR.UrlPath, TargetHost.TargetPort)
+      X = GWorkerT(self, TargetHost.TargetHostAddress, TargetHost.TargetPort, socket, TargetHost, initial_header)
+      X.Serve()
+    elif HttpR is not None and (HttpR.Host + HttpR.UrlPath) in self.URL_Redirections.keys():
+      sURL = HttpR.Host + HttpR.UrlPath
+      redV = self.URL_Redirections[sURL]
+      print('URL Redirect: from ({fromURL}) to ({toURL})'.format(fromURL=redV.SourceURL, toURL=redV.TargetURL))
+      socket.sendall(Get_30X_Reponse(redV.TargetURL, redV.RedirectionType, self.RedirectDictionary))
+    else:
+      # print 'Sending back:\n%s'%Get_404_Reponse(initial_header)
+      socket.sendall(Get_404_Reponse(initial_header))
+      # socket.close()
+       
+    # print 'connection close from address: %s' % address[0]
+
+  def GetTarget(self, clientSocket):
+    '''
+    :param clientSocket:
+    :type clientSocket: socket.socket
+    :return:
+    '''
+    
+    initial_header = clientSocket.recv(4096)
+    retV = None, None , initial_header
+    subDomain = ''
+    if initial_header is not None and len(initial_header) > 0:
+      HttpRequestV = self.DecodeHeader(initial_header)
+      retV = None, HttpRequestV, initial_header
+      subDomain = self.getSubDomain(HttpRequestV.Host)
+      # print 'SubDomain = %s' % subDomain
+      if subDomain == '':
+        retV = None, HttpRequestV, initial_header
+      else:
+        for Vhost in self.SubDomains:
+          if subDomain == Vhost.SubDomain:
+            # print ('found the target domain: %s' % Vhost.SubDomain)
+            retV = Vhost, HttpRequestV, initial_header
+            break
+      if Debug:
+        # print 'Redirecting (%s) from (%s:%s) to (%s:%s)' %(subDomain, localHost, localPort, str(retV[0]), str(retV[1]))
+        Vhost = retV[0]
+        if Vhost is not None:
+          print 'Redirecting from (%s:%s) to (%s:%s%s)' % (HttpRequestV.Host, HttpRequestV.Port, str(Vhost.TargetHostAddress), str(Vhost.TargetPort), Vhost.TargetURLroot)
+        else:
+          print 'Redirecting from (%s:%s) to (%s:%s%s)' % (
+          HttpRequestV.Host, HttpRequestV.Port, 'None', '',
+          '')
+    return retV
+
+  def Start(self):
+    pool = Pool(10000)  # do not accept more than 10000 connections
+    server = StreamServer((self.bind_Address, self.bind_Port), handle=self.On_Connected, spawn=pool)
+    gevent.signal(signal.SIGTERM, server.close)
+    gevent.signal(signal.SIGINT, server.close)
+    server.serve_forever()
+
+  def loadSettings(self, filepath):
+    # global Defualt_TargetHost, Defualt_TargetPort, Defualt_TargetRoot, SubDomains
+    self.HostAliases = []
+    self.SubDomains = []
+    self.URL_Redirections = {}  # type: dict[str, URL_RedirectionT]
+    
+    f = open(filepath, 'rb')
+    s = f.read()
+    f.close()
+    lines = s.splitlines()
+    for l in range(len(lines)):
+      if lines[l] == '<Host>:':
+        i = 1
+        while lines[l + i] != '</Host>':
+          alias = lines[l + i].replace('-', '').strip()
+          self.HostAliases.append(alias)
+          i += 1
+      
+      elif lines[l] == '<Defualt Target>:':
+        i = 1
+        while lines[l + i] != '</Defualt Target>':
+          Sbd = lines[l + i].replace('-', '').strip()
+          if Sbd[:len('Target Host:')] == 'Target Host:':
+            Sbd = Sbd.replace('Target Host:', '').strip()
+            self.Defualt_TargetHost = Sbd
+          elif Sbd[:len('Target Port:')] == 'Target Port:':
+            Sbd = Sbd.replace('Target Port:', '').strip()
+            self.Defualt_TargetPort = int(Sbd)
+          elif Sbd[:len('Root:')] == 'Root:':
+            Sbd = Sbd.replace('Root:', '').strip()
+            self.Defualt_TargetRoot = Sbd
+          
+          i += 1
+      
+      elif lines[l] == '<Sub Domain>:':
+        i = 1
+        sdV = SubDomainTargetT()
+        while lines[l + i] != '</Sub Domain>':
+          Sbd = lines[l + i].replace('-', '').strip()
+          if Sbd[:len('Sub Domain:')] == 'Sub Domain:':
+            Sbd = Sbd.replace('Sub Domain:', '').strip()
+            sdV.SubDomain = Sbd
+          elif Sbd[:len('Target Host:')] == 'Target Host:':
+            Sbd = Sbd.replace('Target Host:', '').strip()
+            sdV.TargetHostAddress = Sbd
+          elif Sbd[:len('Target Port:')] == 'Target Port:':
+            Sbd = Sbd.replace('Target Port:', '').strip()
+            sdV.TargetPort = int(Sbd)
+          elif Sbd[:len('Root:')] == 'Root:':
+            Sbd = Sbd.replace('Root:', '').strip()
+            sdV.TargetURLroot = Sbd
+          
+          i += 1
+        self.SubDomains.append(sdV)
+        
+      elif lines[l] == '<Redirect>:':
+        i = 1
+        rdV = URL_RedirectionT()
+        while lines[l + i] != '</Redirect>':
+          RDL = lines[l + i].replace('-', '').strip()
+          if RDL[:len('Source URL:')] == 'Source URL:':
+            RDL = RDL.replace('Source URL:', '').strip()
+            rdV.SourceURL= RDL
+          elif RDL[:len('Target URL:')] == 'Target URL:':
+            RDL = RDL.replace('Target URL:', '').strip()
+            rdV.TargetURL = RDL
+          elif RDL[:len('Redirection Type:')] == 'Redirection Type:':
+            RDL = RDL.replace('Redirection Type:', '').strip()
+            rdV.RedirectionType = RDL
+          
+          i += 1
+        self.URL_Redirections[rdV.SourceURL] = rdV
+  
+  
+  def DecodeHeader(self, http_header):
+    # type: (str)->HttpRequestHeaderT
+    retV = HttpRequestHeaderT()
+    txtHeaderList = http_header.splitlines()
+    
+    try:
+      retV.UrlPath = self.reg_URLPath.findall(txtHeaderList[0])[0]
+    except Exception as e:
+      retV.UrlPath = '/'
+    
+    try:
+      retV.Host = self.reg_pHost.findall(txtHeaderList[1])[0][0]  # TODO: This could be [1]
+      if retV.Host == '':
+        retV.Host = self.reg_pHost.findall(txtHeaderList[1])[0][1]  # TODO: This could be [1]
+    except Exception as e:
+      print 'Error: Host = %s' % txtHeaderList[1]
+    
+    try:
+      retV.Port = self.reg_pPort.findall(txtHeaderList[1])[0]
+    except Exception as e:
+      retV.Port = 80
+      # print e.message
+    
+    return retV
+  
+  
+  def RedirectUrlPath(self, UrlPath, TargetHost, TargetPort, TargetrootPath, txthttpHeader):
+    txthttpHeaderList = txthttpHeader.splitlines()
+    # txthttpHeaderList[0] = txthttpHeaderList[0].replace(UrlPath, TargetrootPath + UrlPath)
+    if TargetrootPath !='/':
+      newUrlPath = UrlPath.replace(TargetrootPath, '')
+      txthttpHeaderList[0] = self.reg_URLPath.sub(' %s ' % (TargetrootPath + newUrlPath), txthttpHeaderList[0])
+    # txthttpHeaderList[0] = txthttpHeaderList[0].replace(UrlPath, '/vote')
+    txthttpHeaderList[1] = "Host: %s:%s" %(TargetHost, TargetPort)
+    retV = '\r\n'.join(txthttpHeaderList)
+    retV += '\r\n'
+    # retV = txthttpHeader.replace(UrlPath, TargetrootPath + UrlPath)
+    # print '########### new header:'
+    # print retV
+    # print '########### end header:\n'
+    
+    # if retV == txthttpHeader:
+    #   print 'Headers Matches'
+    # else:
+    #   print 'Headers do not Matche'
+    
+    return retV
+  
+  
+  def getSubDomain(self, hostp):
+    sub_host_path = hostp
+    for alias in self.HostAliases:
+      sub_host_path = sub_host_path.replace('.' + alias, '')
+    
+    # if sub_host_path == hostp:
+    #   sub_host_path = ''
+    return sub_host_path
+
+
+class GWorkerT(object):
+  def __init__(self, Server, TargetAddress, TargetPort, clientSocketP, virtualHost, initialHeader):
+    self.Server = Server #type: VHosts
+    self.TargetServerAddress = TargetAddress
+    self.Port = TargetPort
+    self.ClientSocket = clientSocketP
+    self.VirtualHost = virtualHost
+    self.TargetServerSocket = None
+    self.initialHeader = initialHeader
+
+
+  def Serve(self):
+    try:
+      self.TargetServerSocket = create_connection((self.TargetServerAddress, self.Port))
+    except IOError as ex:
+      return
+    newHeader = self.initialHeader
+    HttpR = self.Server.DecodeHeader(self.initialHeader) #type: HttpRequestHeaderT
+    # if HttpR.UrlPath != '/':
+    newHeader = self.Server.RedirectUrlPath(HttpR.UrlPath,self.VirtualHost.TargetHostAddress, self.VirtualHost.TargetPort, self.VirtualHost.TargetURLroot, self.initialHeader)
+
+    self.TargetServerSocket.sendall(newHeader)
+    
+    forwarders = (gevent.spawn(self.ForwardToTargetServer),
+                  gevent.spawn(self.ForwardToClient))
+    # if we return from this method, the stream will be closed out
+    # from under us, so wait for our children
+    gevent.joinall(forwarders)
+
+  def ForwardToTargetServer(self):
+    while True:
+      try:
+        data = self.ClientSocket.recv(1024)
+        # log('%s->%s: %r', source_address, dest_address, data)
+        if not data:
+          break
+        
+        # print data
+        HttpR = self.Server.DecodeHeader(data)  # type: HttpRequestHeaderT
+        # if HttpR.UrlPath != '/':
+        newHeader = self.Server.RedirectUrlPath(HttpR.UrlPath, self.VirtualHost.TargetHostAddress, self.VirtualHost.TargetPort, self.VirtualHost.TargetURLroot, data)
+        data = newHeader
+        self.TargetServerSocket.sendall(data)
+      except:
+        break
+    self.TargetServerSocket.close()
+    self.ClientSocket.close()
+
+
+  def ForwardToClient(self):
+    while True:
+      try:
+        data = self.TargetServerSocket.recv(1024)
+        # log('%s->%s: %r', source_address, dest_address, data)
+        if not data:
+          break
+        self.ClientSocket.sendall(data)
+      except:
+        break
+    self.TargetServerSocket.close()
+    self.ClientSocket.close()
+
+def Get_30X_Reponse(newURL, RedirectionType, RtypeDict):
+  if RedirectionType not in RtypeDict.keys():
+    return Get_404_Reponse('GET')
+  RtypeV = RtypeDict[RedirectionType]
+  header = '''HTTP/1.1 {Rtype} Redirect
+Location: {location}
+Connection: close\n
+      '''.format(Rtype= RtypeV, location=newURL)
+  return header
+
+def Get_404_Reponse(initial_header):
+  header='''HTTP/1.1 404 Not Found
+Server: Simple-Python-HTTP-Server
+Connection: close\n
+    '''
+  # body = '''<html><body><p>Error 404: File not found</p><p>Python HTTP server</p></body></html>
+  # '''
+  body2 = '''<!DOCTYPE html>
+<html lang=en>
+  <meta charset=utf-8>
+  <meta name=viewport content="initial-scale=1, minimum-scale=1, width=device-width">
+  <title>Error 404 (Not Found)!!1</title>
+  <style>
+    *{margin:0;padding:0}html,code{font:15px/22px arial,sans-serif}html{background:#fff;color:#222;padding:15px}body{margin:7% auto 0;max-width:390px;min-height:180px;padding:30px 0 15px}* > body{background:url(//www.google.com/images/errors/robot.png) 100% 5px no-repeat;padding-right:205px}p{margin:11px 0 22px;overflow:hidden}ins{color:#777;text-decoration:none}a img{border:0}@media screen and (max-width:772px){body{background:none;margin-top:0;max-width:none;padding-right:0}}#logo{background:url(//www.google.com/images/branding/googlelogo/1x/googlelogo_color_150x54dp.png) no-repeat;margin-left:-5px}@media only screen and (min-resolution:192dpi){#logo{background:url(//www.google.com/images/branding/googlelogo/2x/googlelogo_color_150x54dp.png) no-repeat 0% 0%/100% 100%;-moz-border-image:url(//www.google.com/images/branding/googlelogo/2x/googlelogo_color_150x54dp.png) 0}}@media only screen and (-webkit-min-device-pixel-ratio:2){#logo{background:url(//www.google.com/images/branding/googlelogo/2x/googlelogo_color_150x54dp.png) no-repeat;-webkit-background-size:100% 100%}}#logo{display:inline-block;height:54px;width:150px}
+  </style>
+  <p><b>404.</b> <ins>That’s an error.</ins>
+  <p>The requested URL <code>/</code> was not found on this server. <ins>That’s all we know.</ins>
+  '''
+  if 'GET' in initial_header:
+    response = header + '\n' + body2
+  else:
+    response = header
+
+  # response = 'HTTP/1.1 404 Not Found\n'
+  # response += 'Connection: close'
+  return response
+
+
+if __name__ == '__main__':
+  if len(sys.argv) != 4:
+    print 'Usage:\n\tvhosts <local address> <port> <settings file>'
+    print 'Example:\n\tvhosts localhost 8080 settings.yaml'
+    sys.exit(0)
+  
+  
+  localHost = sys.argv[1]
+  localPort = int(sys.argv[2])
+  settingsFile = sys.argv[3]
+  
+  if not os.path.isfile(settingsFile):
+    restV = raw_input('"%s" does not exisit.\nDo you want to generate a template fil instead? (y/n): ' % settingsFile)
+    ':type: str'
+    # print 'resV = %s' % str(restV)
+    # restV = str(restV)
+    if restV.lower() == 'y' or restV.lower() == 'yes':
+      appdir = os.path.dirname(__file__)
+      settingsTemplate = os.path.join(appdir, 'settings.conf')
+      newSettingsDir = os.path.dirname(settingsFile)
+      newSettingsFile = os.path.join(newSettingsDir, 'settings.conf')
+      shutil.copy2(settingsTemplate, settingsFile)
+      print 'the file ("%s") has been cereated' % settingsFile
+    sys.exit(0)
+  
+  VH = VHosts()
+  VH.loadSettings(settingsFile)
+  VH.bind(localHost, localPort)
+  VH.Start()
+  print 'Exiting...'
+
