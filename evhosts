@@ -18,6 +18,144 @@ from time import time
 
 Debug = True
 
+
+class SSL_TLS(object):
+  def __init__(self, data):
+    self.data = data
+    self.hostname = ''
+    self.parse_TSL_packet(data)
+    
+  def parse_TSL_packet(self, data):
+    SERVER_NAME_LEN = 256
+    TLS_HEADER_LEN = 5
+    TLS_HANDSHAKE_CONTENT_TYPE = 0x16
+    TLS_HANDSHAKE_TYPE_CLIENT_HELLO = 0x01
+    pos = TLS_HEADER_LEN
+    data_len = len(data)
+  
+    if data_len < TLS_HEADER_LEN:
+      return -1
+  
+    if ord(data[0]) & 0x80 and ord(data[2]) == 1:
+      print("Received SSL 2.0 Client Hello which can not support SNI.")
+      return -2
+  
+    tls_content_type = ord(data[0])
+    tls_version_major = ord(data[1])
+    tls_version_minor = ord(data[2])
+  
+    if tls_content_type != TLS_HANDSHAKE_CONTENT_TYPE:
+      print("Request did not begin with TLS handshake.")
+      return -5
+  
+    if tls_version_major < 3:
+      print("Received SSL %d.%d handshake which can not support SNI." % (tls_version_major, tls_version_minor))
+      return -2
+
+    # /* TLS record length */
+    lenV = (ord(data[3]) << 8) + ord(data[4]) + TLS_HEADER_LEN
+    data_len = min(data_len, lenV)
+    # /* Check we received entire TLS record length */
+    if data_len < lenV:
+      return -1
+  
+    # * Handshake
+    if pos + 1 > data_len:
+      return -5
+    if ord(data[pos]) != TLS_HANDSHAKE_TYPE_CLIENT_HELLO:
+      print("Not a client hello")
+      return -5
+    
+      #   /* Skip past fixed length records:
+      #   1	Handshake Type
+      #   3	Length
+      #   2	Version (again)
+      #   32	Random
+      #   to	Session ID Length
+      # */
+    pos += 38
+  
+    # /* Session ID */
+    if pos + 1 > data_len:
+      return -5
+  
+    lenV = ord(data[pos])
+    pos += 1 + lenV
+  
+    # /* Cipher Suites */
+    if pos + 2 > data_len:
+      return -5
+    lenV = (ord(data[pos]) << 8) + ord(data[pos + 1])
+    pos += 2 + lenV
+  
+    # /* Compression Methods */
+    if pos + 1 > data_len:
+      return -5
+    lenV = ord(data[pos])
+    pos += 1 + lenV
+  
+    if pos == data_len and tls_version_major == 3 and tls_version_minor == 0:
+      print("Received SSL 3.0 handshake without extensions")
+      return -2
+  
+    # /* Extensions */
+    if pos + 2 > data_len:
+      return -5
+    lenV = (ord(data[pos]) << 8) + ord(data[pos + 1])
+    pos += 2
+  
+    if pos + lenV > data_len:
+      return -5
+  
+    return self.parse_extension(data[pos:], lenV)
+    
+
+  def parse_extension(self, data, data_len):
+    pos = 0
+    #/* Parse each 4 bytes for the extension header */
+    while pos + 4 <= data_len:
+        #/* Extension Length */
+        lenV = (ord(data[pos + 2]) << 8) + ord(data[pos + 3])
+
+        #/* Check if it's a server name extension */
+        if ord(data[pos]) == 0x00 and ord(data[pos + 1]) == 0x00:
+          #/* There can be only one extension of each type, so we break our state and move p to beinnging of the extension here */
+          if pos + 4 + lenV > data_len:
+            return -5
+          return self.parse_server_name_extension(data[pos + 4:], lenV)
+
+        pos += 4 + lenV #/* Advance to the next extension header */
+    
+    #/* Check we ended where we expected to */
+    if pos != data_len:
+        return -5
+
+    return -2
+
+  
+  def parse_server_name_extension(self, data, data_len):
+    pos = 2 #/* skip server name list length */
+    while pos + 3 < data_len:
+      lenV = (ord(data[pos + 1]) << 8) + ord(data[pos + 2])
+      if pos + 3 + lenV > data_len:
+        return -5
+
+      if ord(data[pos]) == 0x00: # /* name type == host_name  */
+        #strncpy(*hostname, data + pos + 3, lenV);
+        #(*hostname)[lenV] = '\0';
+        hostname = data[pos+3: pos+3+lenV]
+        self.hostname = hostname
+        return lenV
+      else:
+        print("Unknown server name extension name type: %d"%data[pos])
+        pos += 3 + lenV
+
+    #/* Check we ended where we expected to */
+    if pos != data_len:
+        return -5
+
+    return -2
+
 class SubDomainTargetT(object):
   def __init__(self):
     self.SubDomain = ''
@@ -38,6 +176,7 @@ class HttpRequestHeaderT(object):
     self.Host = ''
     self.UrlPath = ''
     self.Port = 0
+    self.Https = False
 
 class VHosts(object):
   def __init__(self):
@@ -84,7 +223,7 @@ class VHosts(object):
     # print(self.URL_Redirections.keys())
     if TargetHost is not None:
       # print 'Redirecting %s to %s:%s' % (HttpR.Host, TargetHost.TargetHostAddress + HttpR.UrlPath, TargetHost.TargetPort)
-      X = GWorkerT(self, TargetHost.TargetHostAddress, TargetHost.TargetPort, socket, TargetHost, initial_header)
+      X = GWorkerT(self, TargetHost.TargetHostAddress, TargetHost.TargetPort, socket, TargetHost, initial_header, HttpReq)
       X.Serve()
     elif HttpR is not None and (HttpR.Host + HttpR.UrlPath) in self.URL_Redirections.keys():
       sURL = HttpR.Host + HttpR.UrlPath
@@ -97,7 +236,7 @@ class VHosts(object):
       # socket.close()
        
     # print 'connection close from address: %s' % address[0]
-
+  
   def GetTarget(self, clientSocket):
     '''
     :param clientSocket:
@@ -106,10 +245,24 @@ class VHosts(object):
     '''
     
     initial_header = clientSocket.recv(4096)
+    # f = open('./https.hex', 'wb')
+    # f.write(initial_header)
+    # f.close()
+    TLS = SSL_TLS(initial_header) #type: SSL_TLS
+    Is_https = TLS.hostname != ''
     retV = None, None , initial_header
+    
     subDomain = ''
     if initial_header is not None and len(initial_header) > 0:
-      HttpRequestV = self.DecodeHeader(initial_header)
+      if Is_https:
+        HttpRequestV = HttpRequestHeaderT() #type: HttpRequestHeaderT
+        HttpRequestV.Host = TLS.hostname
+        HttpRequestV.UrlPath = '/'
+        HttpRequestV.Port = self.bind_Port
+        HttpRequestV.Https = True
+      else:
+        HttpRequestV = self.DecodeHeader(initial_header)
+      
       retV = None, HttpRequestV, initial_header
       subDomain = self.getSubDomain(HttpRequestV.Host)
       # print 'SubDomain = %s' % subDomain
@@ -273,7 +426,7 @@ class VHosts(object):
 
 
 class GWorkerT(object):
-  def __init__(self, Server, TargetAddress, TargetPort, clientSocketP, virtualHost, initialHeader):
+  def __init__(self, Server, TargetAddress, TargetPort, clientSocketP, virtualHost, initialHeader, RequestV):
     self.Server = Server #type: VHosts
     self.TargetServerAddress = TargetAddress
     self.Port = TargetPort
@@ -281,6 +434,8 @@ class GWorkerT(object):
     self.VirtualHost = virtualHost
     self.TargetServerSocket = None
     self.initialHeader = initialHeader
+    self.RequestV = RequestV #type:HttpRequestHeaderT
+    self.Is_HTTPS = RequestV.Https
 
 
   def Serve(self):
@@ -289,9 +444,10 @@ class GWorkerT(object):
     except IOError as ex:
       return
     newHeader = self.initialHeader
-    HttpR = self.Server.DecodeHeader(self.initialHeader) #type: HttpRequestHeaderT
-    # if HttpR.UrlPath != '/':
-    newHeader = self.Server.RedirectUrlPath(HttpR.UrlPath,self.VirtualHost.TargetHostAddress, self.VirtualHost.TargetPort, self.VirtualHost.TargetURLroot, self.initialHeader)
+    if not self.RequestV.Https:
+      HttpR = self.Server.DecodeHeader(self.initialHeader) #type: HttpRequestHeaderT
+      # if HttpR.UrlPath != '/':
+      newHeader = self.Server.RedirectUrlPath(HttpR.UrlPath,self.VirtualHost.TargetHostAddress, self.VirtualHost.TargetPort, self.VirtualHost.TargetURLroot, self.initialHeader)
 
     self.TargetServerSocket.sendall(newHeader)
     
@@ -310,11 +466,14 @@ class GWorkerT(object):
           break
         
         # print data
-        HttpR = self.Server.DecodeHeader(data)  # type: HttpRequestHeaderT
-        # if HttpR.UrlPath != '/':
-        newHeader = self.Server.RedirectUrlPath(HttpR.UrlPath, self.VirtualHost.TargetHostAddress, self.VirtualHost.TargetPort, self.VirtualHost.TargetURLroot, data)
-        data = newHeader
+        
+        if not self.Is_HTTPS:
+          HttpR = self.Server.DecodeHeader(data)  # type: HttpRequestHeaderT
+          # if HttpR.UrlPath != '/':
+          newHeader = self.Server.RedirectUrlPath(HttpR.UrlPath, self.VirtualHost.TargetHostAddress, self.VirtualHost.TargetPort, self.VirtualHost.TargetURLroot, data)
+          data = newHeader
         self.TargetServerSocket.sendall(data)
+        
       except:
         break
     self.TargetServerSocket.close()
