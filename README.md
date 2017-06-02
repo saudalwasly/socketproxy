@@ -44,6 +44,10 @@ Example:
 #> 
 
 ```
+To use `evhost` with authbind:
+```
+authbind python evhost localhost 80 settings.yaml 
+```
 
 ### Configuration File ###
 The configuration file is a text-based yaml-like file. An example of a configuration file is listed below. `evhost` detects changes in the configuration file at runtime and adopts the changes right away.
