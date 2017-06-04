@@ -13,8 +13,10 @@ from gevent.pool import Pool
 import gevent
 import signal
 import re
+import fnmatch
 import sys, os, shutil
-from time import time
+from time import time, sleep
+import threading
 
 Debug = True
 
@@ -45,7 +47,7 @@ class SSL_TLS(object):
     tls_version_minor = ord(data[2])
   
     if tls_content_type != TLS_HANDSHAKE_CONTENT_TYPE:
-      print("Request did not begin with TLS handshake.")
+      #print("Request did not begin with TLS handshake.")
       return -5
   
     if tls_version_major < 3:
@@ -156,9 +158,10 @@ class SSL_TLS(object):
 
     return -2
 
-class SubDomainTargetT(object):
+class DomainTargetT(object):
   def __init__(self):
-    self.SubDomain = ''
+    self.DomainName = ''
+    self.ListeningPorts = []
     self.TargetHostAddress = ''
     self.TargetPort = 0
     self.TargetURLroot = '/'
@@ -182,8 +185,8 @@ class VHosts(object):
   def __init__(self):
     self.HostAliases = []
     ':type: list[str]'
-    self.SubDomains = []
-    ':type: list[SubDomainTargetT]'
+    self.Domains = []
+    ':type: list[DomainTargetT]'
     self.URL_Redirections = {} #type: dict[str, URL_RedirectionT]
     self.RedirectDictionary = {}  # type:[str, str]
     self.RedirectDictionary['301'] = '301 Moved Permanently'
@@ -203,33 +206,35 @@ class VHosts(object):
     self.Debug = True
     self.terminateAll = False
       
-    self.bind_Address = '0.0.0.0'
+    self.bind_Addresse = '0.0.0.0'
     self.bind_Port = 8000
     self.LastConnectionTime = time()
-
+    
+    self.gevent_server = None #type: gevent.StreamServer
+    
       
   def bind(self, OnAddress,  OnPort):
-    self.bind_Address = OnAddress
+    self.bind_Addresse = OnAddress
     self.bind_Port = OnPort
 
   def On_Connected(self, socket, address):
-    if time() - self.LastConnectionTime> 30:
-      self.loadSettings(settingsFile)
+    # if time() - self.LastConnectionTime> 30:
+    #   self.loadSettings(settingsFile)
     # print 'new connection from address: %s on port %s' % (address[0], address[1])
 
     (THost, HttpReq, initial_header) = self.GetTarget(socket)
-    TargetHost = THost #type: SubDomainTargetT
+    TargetHost = THost #type: DomainTargetT
     HttpR = HttpReq #type: HttpRequestHeaderT
     # print(self.URL_Redirections.keys())
-    if TargetHost is not None:
-      # print 'Redirecting %s to %s:%s' % (HttpR.Host, TargetHost.TargetHostAddress + HttpR.UrlPath, TargetHost.TargetPort)
-      X = GWorkerT(self, TargetHost.TargetHostAddress, TargetHost.TargetPort, socket, TargetHost, initial_header, HttpReq)
-      X.Serve()
-    elif HttpR is not None and (HttpR.Host + HttpR.UrlPath) in self.URL_Redirections.keys():
+    if HttpR is not None and (HttpR.Host + HttpR.UrlPath) in self.URL_Redirections.keys():
       sURL = HttpR.Host + HttpR.UrlPath
       redV = self.URL_Redirections[sURL]
       print('URL Redirect: from ({fromURL}) to ({toURL})'.format(fromURL=redV.SourceURL, toURL=redV.TargetURL))
       socket.sendall(Get_30X_Reponse(redV.TargetURL, redV.RedirectionType, self.RedirectDictionary))
+    elif TargetHost is not None:
+      # print 'Redirecting %s to %s:%s' % (HttpR.Host, TargetHost.TargetHostAddress + HttpR.UrlPath, TargetHost.TargetPort)
+      X = GWorkerT(self, TargetHost.TargetHostAddress, TargetHost.TargetPort, socket, TargetHost, initial_header, HttpReq)
+      X.Serve()
     else:
       # print 'Sending back:\n%s'%Get_404_Reponse(initial_header)
       socket.sendall(Get_404_Reponse(initial_header))
@@ -252,7 +257,7 @@ class VHosts(object):
     Is_https = TLS.hostname != ''
     retV = None, None , initial_header
     
-    subDomain = ''
+    DomainName = ''
     if initial_header is not None and len(initial_header) > 0:
       if Is_https:
         HttpRequestV = HttpRequestHeaderT() #type: HttpRequestHeaderT
@@ -264,18 +269,25 @@ class VHosts(object):
         HttpRequestV = self.DecodeHeader(initial_header)
       
       retV = None, HttpRequestV, initial_header
-      subDomain = self.getSubDomain(HttpRequestV.Host)
-      # print 'SubDomain = %s' % subDomain
-      if subDomain == '':
+      DomainName = self.getSubDomain(HttpRequestV.Host)
+      # print 'DomainName = %s' % DomainName
+      if DomainName == '':
         retV = None, HttpRequestV, initial_header
       else:
-        for Vhost in self.SubDomains:
-          if subDomain == Vhost.SubDomain:
-            # print ('found the target domain: %s' % Vhost.SubDomain)
+        for Vhost in self.Domains:
+          if fnmatch.fnmatch(DomainName, Vhost.DomainName):
+            PortMatch = False
+            for Lp in Vhost.ListeningPorts:
+              if Lp == self.bind_Port:
+                PortMatch = True
+                break
+            # print ('found the target domain: %s' % Vhost.DomainName)
+            if not PortMatch:
+              continue
             retV = Vhost, HttpRequestV, initial_header
             break
       if Debug:
-        # print 'Redirecting (%s) from (%s:%s) to (%s:%s)' %(subDomain, localHost, localPort, str(retV[0]), str(retV[1]))
+        # print 'Redirecting (%s) from (%s:%s) to (%s:%s)' %(DomainName, localHost, localPort, str(retV[0]), str(retV[1]))
         Vhost = retV[0]
         if Vhost is not None:
           print 'Redirecting from (%s:%s) to (%s:%s%s)' % (HttpRequestV.Host, HttpRequestV.Port, str(Vhost.TargetHostAddress), str(Vhost.TargetPort), Vhost.TargetURLroot)
@@ -285,17 +297,24 @@ class VHosts(object):
           '')
     return retV
 
+  def Terminate(self):
+    self.gevent_server.close()
+    
   def Start(self):
     pool = Pool(10000)  # do not accept more than 10000 connections
-    server = StreamServer((self.bind_Address, self.bind_Port), handle=self.On_Connected, spawn=pool)
+    server = StreamServer((self.bind_Addresse, self.bind_Port), handle=self.On_Connected, spawn=pool)
+    
     gevent.signal(signal.SIGTERM, server.close)
     gevent.signal(signal.SIGINT, server.close)
+    self.gevent_server = server
     server.serve_forever()
 
   def loadSettings(self, filepath):
-    # global Defualt_TargetHost, Defualt_TargetPort, Defualt_TargetRoot, SubDomains
+    # global Defualt_TargetHost, Defualt_TargetPort, Defualt_TargetRoot, Domains
     self.HostAliases = []
-    self.SubDomains = []
+    self.Domains = []
+    self.bind_Addresse = ['0.0.0.0']
+    self.bind_Port = [8000]
     self.URL_Redirections = {}  # type: dict[str, URL_RedirectionT]
     
     f = open(filepath, 'rb')
@@ -303,11 +322,31 @@ class VHosts(object):
     f.close()
     lines = s.splitlines()
     for l in range(len(lines)):
-      if lines[l] == '<Host>:':
+      lineV = lines[l].strip()
+      # if lineV.__contains__('#'):
+      #   print '#'
+      if lineV=='' or lineV[0]=='#' :
+        continue
+        
+        
+      if lineV == '<Host>:':
         i = 1
         while lines[l + i] != '</Host>':
           alias = lines[l + i].replace('-', '').strip()
           self.HostAliases.append(alias)
+          i += 1
+      
+      elif lineV == '<Bind>:':
+        i = 1
+        while lines[l + i] != '</Bind>':
+          entry = lines[l + i].replace('-', '').strip()
+          if entry[:len('IPs:')] == 'IPs:':
+            IPs = entry.replace('IPs:', '').strip()
+            self.bind_Addresse = IPs.split(',')
+          elif entry[:len('Ports:')] == 'Ports:':
+            Ports = entry.replace('Ports:', '').strip()
+            self.bind_Port= [int(Port) for Port in Ports.split(',')]
+         
           i += 1
       
       elif lines[l] == '<Defualt Target>:':
@@ -325,15 +364,18 @@ class VHosts(object):
             self.Defualt_TargetRoot = Sbd
           
           i += 1
-      
-      elif lines[l] == '<Sub Domain>:':
+          
+      elif lines[l] == '<Domain>:':
         i = 1
-        sdV = SubDomainTargetT()
-        while lines[l + i] != '</Sub Domain>':
+        sdV = DomainTargetT() #type: DomainTargetT
+        while lines[l + i] != '</Domain>':
           Sbd = lines[l + i].replace('-', '').strip()
-          if Sbd[:len('Sub Domain:')] == 'Sub Domain:':
-            Sbd = Sbd.replace('Sub Domain:', '').strip()
-            sdV.SubDomain = Sbd
+          if Sbd[:len('Domain Name:')] == 'Domain Name:':
+            Sbd = Sbd.replace('Domain Name:', '').strip()
+            sdV.DomainName = Sbd
+          elif Sbd[:len('Listening Ports:')] == 'Listening Ports:':
+            Sbd = Sbd.replace('Listening Ports:', '').strip()
+            sdV.ListeningPorts = [int(Port) for Port in Sbd.split(',')]
           elif Sbd[:len('Target Host:')] == 'Target Host:':
             Sbd = Sbd.replace('Target Host:', '').strip()
             sdV.TargetHostAddress = Sbd
@@ -345,7 +387,7 @@ class VHosts(object):
             sdV.TargetURLroot = Sbd
           
           i += 1
-        self.SubDomains.append(sdV)
+        self.Domains.append(sdV)
         
       elif lines[l] == '<Redirect>:':
         i = 1
@@ -366,6 +408,14 @@ class VHosts(object):
         self.URL_Redirections[rdV.SourceURL] = rdV
   
   
+  def Filter_Domains_by_Port(self, Port):
+    DomainsTo_filter = []
+    for D in self.Domains:
+      if Port not in D.ListeningPorts:
+        DomainsTo_filter.append(D)
+    for D in DomainsTo_filter:
+      self.Domains.remove(D)
+
   def DecodeHeader(self, http_header):
     # type: (str)->HttpRequestHeaderT
     retV = HttpRequestHeaderT()
@@ -530,17 +580,33 @@ Connection: close\n
   # response += 'Connection: close'
   return response
 
-
-if __name__ == '__main__':
-  if len(sys.argv) != 4:
-    print 'Usage:\n\tvhosts <local address> <port> <settings file>'
-    print 'Example:\n\tvhosts localhost 8080 settings.yaml'
+class ServerThread(object):
+  def __init__(self, VHost):
+    self.VHost = VHost #type:VHosts
+    self.WorkingThread =  threading.Thread(target=self.Start_VH)
+    self.WorkingThread.daemon = True
+  def Thread_Start(self):
+    self.WorkingThread.start()
+    
+  def Start_VH(self):
+    self.VHost.Start()
+def signal_handler(signal, frame):
+  # print('You pressed Ctrl+C!')
+  for th in srvThreads:
+    th.VHost.Terminate()
+  print 'Exiting...'
+  sleep(1)
+  sys.exit(0)
+  
+def main():
+  if len(sys.argv) != 2:
+    print 'Usage:\n\tvhosts <settings file>'
+    print 'Example:\n\tvhosts settings.conf'
     sys.exit(0)
   
-  
-  localHost = sys.argv[1]
-  localPort = int(sys.argv[2])
-  settingsFile = sys.argv[3]
+  # localHost = sys.argv[1]
+  # localPort = int(sys.argv[2])
+  settingsFile = sys.argv[1]
   
   if not os.path.isfile(settingsFile):
     restV = raw_input('"%s" does not exisit.\nDo you want to generate a template fil instead? (y/n): ' % settingsFile)
@@ -556,9 +622,41 @@ if __name__ == '__main__':
       print 'the file ("%s") has been cereated' % settingsFile
     sys.exit(0)
   
-  VH = VHosts()
-  VH.loadSettings(settingsFile)
-  VH.bind(localHost, localPort)
-  VH.Start()
+  initial_VH = VHosts()  # type: VHosts
+  initial_VH.loadSettings(settingsFile)
+  IPs = initial_VH.bind_Addresse
+  Ports = initial_VH.bind_Port
+  #srvThreads = [] #type: list[ServerThread]
+  for IP in IPs:
+    for P in Ports:
+      VH_P = VHosts()  # type:VHosts
+      srvThread = ServerThread(VH_P) #type: ServerThread
+      
+      srvThreads.append(srvThread)
+      VH_P.loadSettings(settingsFile)
+      VH_P.bind(IP, P)
+      VH_P.Filter_Domains_by_Port(P)
+      print('Listening on (%s,%d)'%(IP,P))
+      srvThread.Thread_Start()
+
+  signal.signal(signal.SIGINT, signal_handler)
+  signal.signal(signal.SIGTERM, signal_handler)
+
+  active = True
+  while active:
+    for th in srvThreads:
+      active =  th.WorkingThread.isAlive()
+      if active:
+        break
+    if not active:
+      break
+      
+  for th in srvThreads:
+    th.VHost.Terminate()
   print 'Exiting...'
 
+
+if __name__ == '__main__':
+  srvThreads = []  # type: list[ServerThread]
+  print 'Virtual Hosts Reverse Proxy Server, V 1.2\nStarting....'
+  main()
