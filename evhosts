@@ -169,6 +169,7 @@ class DomainTargetT(object):
 class URL_RedirectionT(object):
   def __init__(self):
     self.SourceURL = ''
+    self.ListeningPorts = []
     self.TargetURL = ''
     self.RedirectionType = '301'
     
@@ -269,7 +270,8 @@ class VHosts(object):
         HttpRequestV = self.DecodeHeader(initial_header)
       
       retV = None, HttpRequestV, initial_header
-      DomainName = self.getSubDomain(HttpRequestV.Host)
+      # DomainName = self.getSubDomain(HttpRequestV.Host)
+      DomainName = HttpRequestV.Host
       # print 'DomainName = %s' % DomainName
       if DomainName == '':
         retV = None, HttpRequestV, initial_header
@@ -391,12 +393,15 @@ class VHosts(object):
         
       elif lines[l] == '<Redirect>:':
         i = 1
-        rdV = URL_RedirectionT()
+        rdV = URL_RedirectionT() #type: URL_RedirectionT
         while lines[l + i] != '</Redirect>':
           RDL = lines[l + i].replace('-', '').strip()
           if RDL[:len('Source URL:')] == 'Source URL:':
             RDL = RDL.replace('Source URL:', '').strip()
             rdV.SourceURL= RDL
+          elif RDL[:len('Listening Ports:')] == 'Listening Ports:':
+            RDL = RDL.replace('Listening Ports:', '').strip()
+            rdV.ListeningPorts = [int(Port) for Port in RDL.split(',')]
           elif RDL[:len('Target URL:')] == 'Target URL:':
             RDL = RDL.replace('Target URL:', '').strip()
             rdV.TargetURL = RDL
@@ -415,6 +420,15 @@ class VHosts(object):
         DomainsTo_filter.append(D)
     for D in DomainsTo_filter:
       self.Domains.remove(D)
+
+    URLs_To_Filter = []
+    for url in self.URL_Redirections.keys():
+      if Port not in self.URL_Redirections[url].ListeningPorts:
+        URLs_To_Filter.append(url)
+    for url in URLs_To_Filter:
+      del self.URL_Redirections[url]
+    
+    # print url
 
   def DecodeHeader(self, http_header):
     # type: (str)->HttpRequestHeaderT
