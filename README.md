@@ -57,7 +57,13 @@ The configuration file is a text-based yaml-like file. An example of a configura
   - localhost
   - your.domain.something
   - 127.0.0.1
+  - xxx.xxx.xxx.xxx
 </Host>
+
+<Bind>:
+  - IPs: 0.0.0.0
+  - Ports: 443, 80
+</Bind>
 
 <Defualt Target>:
   - Target Host: localhost
@@ -66,36 +72,33 @@ The configuration file is a text-based yaml-like file. An example of a configura
 </Defualt Target>
 
 
-<Sub Domain>:
-  - Sub Domain: site1
+<Domain>:
+  - Domain Name: site1
+  - Listening Ports: 443
   - Target Host: localhost
-  - Target Port: 1500
+  - Target Port: 1500  
   - Root: /
-</Sub Domain>
+</Domain>
 
-<Sub Domain>:
-  - Sub Domain: site2.x
+<Domain>:
+  - Domain Name: site2
+  - Listening Ports: 80
   - Target Host: localhost
   - Target Port: 1502
   - Root: /
-</Sub Domain>
-
-<Sub Domain>:
-  - Sub Domain: g
-  - Target Host: www.google.com
-  - Target Port: 80
-  - Root: /news
-</Sub Domain>
+</Domain>
+###########################################
+###########################################
 
 <Redirect>:
-  - Source URL: r.localhost/url1
-  - Target URL: http://www.uwaterloo.ca
+  - Source URL: r.site1/url1
+  - Target URL: https://www.uwaterloo.ca
   - Redirection Type: 303
 </Redirect>
 
 <Redirect>:
-  - Source URL: r.localhost/url2
-  - Target URL: http://www.google.ca
+  - Source URL: r.site2/url2
+  - Target URL: http://site2/loging
   - Redirection Type: 301
 </Redirect>
 ```
