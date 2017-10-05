@@ -38,9 +38,9 @@ chmod 500 /etc/authbind/byport/80
 #> evhost -h
 #> ./evhosts -h
 Usage:
-    evhosts <local address> <port> <settings file>
+    evhosts <settings file>
 Example:
-    evhosts localhost 8080 settings.yaml
+    evhosts settings.conf
 #> 
 
 ```
