@@ -224,6 +224,7 @@ class VHosts(object):
     # print 'new connection from address: %s on port %s' % (address[0], address[1])
 
     (THost, HttpReq, initial_header) = self.GetTarget(socket)
+    # print('To Host: %s on Port: %s,\tPath = %s' %(HttpReq.Host, HttpReq.Port, HttpReq.UrlPath))
     TargetHost = THost #type: DomainTargetT
     HttpR = HttpReq #type: HttpRequestHeaderT
     # print(self.URL_Redirections.keys())
@@ -524,19 +525,28 @@ class GWorkerT(object):
   def ForwardToTargetServer(self):
     while True:
       try:
+        t1 = time()
         data = self.ClientSocket.recv(1024)
+        # print('got data from client to %s ""<-- %s -->' % (self.TargetServerAddress, data))
+        # print('got data from client to %s ' % self.TargetServerAddress)
         # log('%s->%s: %r', source_address, dest_address, data)
+
         if not data:
           break
-        
         # print data
-        
+
         if not self.Is_HTTPS:
           HttpR = self.Server.DecodeHeader(data)  # type: HttpRequestHeaderT
           # if HttpR.UrlPath != '/':
           newHeader = self.Server.RedirectUrlPath(HttpR.UrlPath, self.VirtualHost.TargetHostAddress, self.VirtualHost.TargetPort, self.VirtualHost.TargetURLroot, data)
           data = newHeader
         self.TargetServerSocket.sendall(data)
+        # print('Data sent to Server')
+        t2 = time()
+        tdiff = t2 - t1
+        if tdiff > 3:
+          # print('Force Disconnect')
+          break
         
       except:
         break
@@ -552,6 +562,8 @@ class GWorkerT(object):
         if not data:
           break
         self.ClientSocket.sendall(data)
+        # print('Data sent to Client')
+
       except:
         break
     self.TargetServerSocket.close()
@@ -658,6 +670,7 @@ def main():
 
   active = True
   while active:
+    sleep(0.1)
     for th in srvThreads:
       active =  th.WorkingThread.isAlive()
       if active:
